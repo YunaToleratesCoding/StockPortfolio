@@ -8,9 +8,9 @@ import plotly.express as px
 import streamlit as st
 
 # ============================================================
-# Page + “Wix-ish” styling (dark, clean, lots of whitespace)
+# Page + Styling
 # ============================================================
-st.set_page_config(page_title="Stock Insight Dashboard", layout="wide")
+st.set_page_config(page_title="Stock Insights by Ming Quan", layout="wide")
 
 CSS = """
 <style>
@@ -21,7 +21,6 @@ CSS = """
     --border: rgba(255,255,255,0.10);
     --text: rgba(255,255,255,0.92);
     --muted: rgba(255,255,255,0.65);
-    --accent: #6ee7ff;
   }
   .stApp {
     background: radial-gradient(1200px 800px at 20% 0%, rgba(110,231,255,0.10), transparent 55%),
@@ -54,7 +53,7 @@ CSS = """
   }
   .section {
     border: 1px solid var(--border);
-    background: var(--panel2);
+    background: rgba(255,255,255,0.04);
     border-radius: 18px;
     padding: 14px 14px;
     margin-top: 14px;
@@ -67,7 +66,6 @@ CSS = """
   .muted { color: var(--muted); }
   hr { border: none; border-top: 1px solid var(--border); margin: 16px 0; }
 
-  /* Streamlit widgets */
   .stTextInput input, .stSelectbox select {
     background: rgba(255,255,255,0.06) !important;
     border: 1px solid var(--border) !important;
@@ -84,7 +82,6 @@ CSS = """
     border-color: rgba(110,231,255,0.35) !important;
   }
 
-  /* Dataframe */
   div[data-testid="stDataFrame"]{
     border: 1px solid var(--border);
     border-radius: 14px;
@@ -94,15 +91,16 @@ CSS = """
 """
 st.markdown(CSS, unsafe_allow_html=True)
 
+# (2) Title change
 st.markdown(
     """
     <div class="hero">
-      <p class="hero-title">Stock Insight Dashboard</p>
+      <p class="hero-title">Stock Insights by Ming Quan</p>
       <div class="hero-sub">
-        Compare performance, explore correlations, scan news, and view government trade disclosures.
+        Compare performance, explore correlations, and view government trade disclosures.
         Built with Python, Streamlit, yfinance, and Capitol Trades.
       </div>
-      <span class="chip">Portfolio project • Data sourced from Yahoo Finance (via yfinance) with a fallback provider when throttled</span>
+      <span class="chip">Portfolio project • Data taken from Yahoo Finance (via yfinance). If throttled, a fallback provider may be used.</span>
     </div>
     """,
     unsafe_allow_html=True
@@ -141,11 +139,6 @@ def _normalize_pct_change(s: pd.Series) -> pd.Series:
         return s * 0
     return (s / base - 1) * 100
 
-def _safe_link(url: str | None) -> str:
-    if not url:
-        return ""
-    return url
-
 # ============================================================
 # Data Fetch: Yahoo primary + Stooq fallback (no key)
 # ============================================================
@@ -168,8 +161,6 @@ def fetch_from_stooq(symbol: str, period: str) -> pd.DataFrame:
         return pd.DataFrame()
 
     start = _period_to_start(period)
-
-    # Try a few common variants
     candidates = [sym]
     if not sym.endswith(".us"):
         candidates.append(f"{sym}.us")
@@ -186,9 +177,8 @@ def fetch_from_stooq(symbol: str, period: str) -> pd.DataFrame:
 
         df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
         df = df.dropna(subset=["Date"]).set_index("Date").sort_index()
-
-        # Standardize names
         df = df.rename(columns={col: col.title() for col in df.columns})
+
         keep = [k for k in ["Open", "High", "Low", "Close", "Volume"] if k in df.columns]
         df = df[keep].dropna()
 
@@ -205,7 +195,6 @@ def fetch_price_data(symbol: str, period: str) -> tuple[pd.DataFrame, str]:
     if not symbol:
         return pd.DataFrame(), "none"
 
-    # Light retry on Yahoo
     for attempt in range(2):
         try:
             df = fetch_from_yahoo(symbol, period)
@@ -221,20 +210,47 @@ def fetch_price_data(symbol: str, period: str) -> tuple[pd.DataFrame, str]:
     return pd.DataFrame(), "none"
 
 # ============================================================
-# Capitol Trades fetch (no key)
+# Capitol Trades fetch (503-resilient)
 # ============================================================
 CAPITOL_BFF_TRADES = "https://bff.capitoltrades.com/trades"
+
+def capitol_request_with_retry(url: str, params: dict, retries: int = 4) -> dict:
+    """
+    Retries 503/429/5xx with exponential backoff.
+    Adds a normal User-Agent header to reduce blocks.
+    """
+    headers = {
+        "User-Agent": "Mozilla/5.0 (compatible; StockInsights/1.0; +https://streamlit.app)",
+        "Accept": "application/json,text/plain,*/*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "https://www.capitoltrades.com/",
+        "Origin": "https://www.capitoltrades.com",
+    }
+
+    last_exc = None
+    for i in range(retries):
+        try:
+            r = requests.get(url, params=params, headers=headers, timeout=20)
+            # Treat these as retryable
+            if r.status_code in (429, 500, 502, 503, 504):
+                raise requests.HTTPError(f"{r.status_code} {r.reason}", response=r)
+            r.raise_for_status()
+            return r.json()
+        except Exception as e:
+            last_exc = e
+            sleep_s = min(8.0, 0.8 * (2 ** i))  # 0.8, 1.6, 3.2, 6.4...
+            time.sleep(sleep_s)
+
+    raise last_exc if last_exc else RuntimeError("Capitol Trades request failed.")
 
 @st.cache_data(ttl=1800, show_spinner=False, max_entries=64)
 def fetch_capitol_trades(pages: int = 2, page_size: int = 100) -> pd.DataFrame:
     rows = []
     for page in range(1, pages + 1):
         params = {"page": page, "pageSize": page_size, "per_page": page_size}
-        r = requests.get(CAPITOL_BFF_TRADES, params=params, timeout=20)
-        r.raise_for_status()
-        payload = r.json()
-        data = payload.get("data", []) if isinstance(payload, dict) else []
+        payload = capitol_request_with_retry(CAPITOL_BFF_TRADES, params=params, retries=4)
 
+        data = payload.get("data", []) if isinstance(payload, dict) else []
         for row in data:
             pol = row.get("politician", {}) or {}
             asset = row.get("asset", {}) or {}
@@ -253,9 +269,9 @@ def fetch_capitol_trades(pages: int = 2, page_size: int = 100) -> pd.DataFrame:
                 "State": pol.get("_stateId"),
                 "Ticker": ticker,
                 "Asset": asset.get("assetName"),
-                "Action": row.get("type"),   # Buy/Sell/etc
-                "Size": row.get("size"),     # e.g. "$1,001 - $15,000"
-                "Filed After (days)": row.get("filedAfter"),
+                "Action": row.get("type"),
+                "Size": row.get("size"),
+                "Delay (days)": row.get("filedAfter"),
                 "Source": row.get("sourceUrl") or row.get("url") or None,
             })
 
@@ -295,6 +311,9 @@ if "df1" not in st.session_state:
     st.session_state.src1 = "none"
     st.session_state.src2 = "none"
     st.session_state.last_fetch = None
+if "last_good_trades" not in st.session_state:
+    st.session_state.last_good_trades = pd.DataFrame()
+    st.session_state.last_good_trades_ts = None
 
 if fetch_btn:
     with st.spinner("Fetching price data..."):
@@ -311,14 +330,13 @@ df1 = st.session_state.df1
 df2 = st.session_state.df2
 
 # ============================================================
-# Price charts
+# Price charts (with red/blue comparison lines)
 # ============================================================
 st.markdown('<div class="section"><div class="section-title">Price charts</div>', unsafe_allow_html=True)
 
 if st.session_state.last_fetch:
     st.markdown(f'<div class="muted">Last refresh: {st.session_state.last_fetch}</div>', unsafe_allow_html=True)
 
-# (1) Replace redundant primary/secondary labels with a single line
 st.markdown('<div class="muted">Data taken from Yahoo Finance (via yfinance). If throttled, a fallback provider may be used.</div>', unsafe_allow_html=True)
 
 def plot_compare_chart(series_a: pd.Series, name_a: str, series_b: pd.Series, name_b: str, pct_mode: bool) -> go.Figure:
@@ -330,26 +348,15 @@ def plot_compare_chart(series_a: pd.Series, name_a: str, series_b: pd.Series, na
         y_title = "Price"
 
     fig = go.Figure()
+    fig.add_trace(go.Scatter(x=combined.index, y=combined[name_a], mode="lines", name=name_a,
+                             line=dict(color="red", width=2.6)))
+    fig.add_trace(go.Scatter(x=combined.index, y=combined[name_b], mode="lines", name=name_b,
+                             line=dict(color="royalblue", width=2.6)))
 
-    # (2) Force one line red, one line blue
-    fig.add_trace(go.Scatter(
-        x=combined.index, y=combined[name_a],
-        mode="lines",
-        name=name_a,
-        line=dict(color="red", width=2.5)
-    ))
-    fig.add_trace(go.Scatter(
-        x=combined.index, y=combined[name_b],
-        mode="lines",
-        name=name_b,
-        line=dict(color="royalblue", width=2.5)
-    ))
-
-    # (3) Remove title “box”, keep it text only
     fig.update_layout(
         template="plotly_dark",
         title=dict(text=f"{name_a} vs {name_b}", x=0.0, xanchor="left", font=dict(size=18)),
-        paper_bgcolor="rgba(0,0,0,0)",   # transparent so no white/solid block
+        paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
         margin=dict(l=10, r=10, t=50, b=10),
         height=440,
@@ -366,10 +373,8 @@ def plot_compare_chart(series_a: pd.Series, name_a: str, series_b: pd.Series, na
 
 def plot_single_close(df: pd.DataFrame, sym: str) -> go.Figure:
     fig = go.Figure()
-    fig.add_trace(go.Scatter(
-        x=df.index, y=df["Close"], mode="lines",
-        name=sym, line=dict(color="royalblue", width=2.5)
-    ))
+    fig.add_trace(go.Scatter(x=df.index, y=df["Close"], mode="lines", name=sym,
+                             line=dict(color="royalblue", width=2.6)))
     fig.update_layout(
         template="plotly_dark",
         title=dict(text=f"{sym} closing price", x=0.0, xanchor="left", font=dict(size=18)),
@@ -386,11 +391,7 @@ def plot_single_close(df: pd.DataFrame, sym: str) -> go.Figure:
 
 def plot_candles(df: pd.DataFrame, sym: str) -> go.Figure:
     fig = go.Figure()
-    fig.add_trace(go.Candlestick(
-        x=df.index,
-        open=df["Open"], high=df["High"], low=df["Low"], close=df["Close"],
-        name=sym
-    ))
+    fig.add_trace(go.Candlestick(x=df.index, open=df["Open"], high=df["High"], low=df["Low"], close=df["Close"], name=sym))
     fig.update_layout(
         template="plotly_dark",
         title=dict(text=f"{sym} OHLC (candlestick)", x=0.0, xanchor="left", font=dict(size=18)),
@@ -409,9 +410,7 @@ if df1.empty:
     st.warning("No data loaded yet. Click Fetch / Refresh Data. If it still fails, Yahoo may be throttling—try again in a minute.")
 else:
     if compare_symbol and not df2.empty:
-        s1 = df1["Close"]
-        s2 = df2["Close"]
-        fig = plot_compare_chart(s1, symbol, s2, compare_symbol, compare_as_pct)
+        fig = plot_compare_chart(df1["Close"], symbol, df2["Close"], compare_symbol, compare_as_pct)
         st.plotly_chart(fig, width="stretch")
     else:
         st.plotly_chart(plot_single_close(df1, symbol), width="stretch")
@@ -421,7 +420,7 @@ else:
 st.markdown("</div>", unsafe_allow_html=True)  # close section
 
 # ============================================================
-# Government trading activity (Capitol Trades) — clearer
+# Government trading activity (Capitol Trades) — now resilient
 # ============================================================
 st.markdown(
     '<div class="section"><div class="section-title">Government trading activity</div>'
@@ -437,85 +436,99 @@ with filters2:
 with filters3:
     lookback_days = st.selectbox("Lookback window", [7, 14, 30, 90], index=2)
 
-more1, more2 = st.columns([1, 1], gap="large")
+more1, more2, more3 = st.columns([1, 1, 1], gap="large")
 with more1:
     pages = st.slider("How much to pull (pages)", 1, 5, 2)
 with more2:
     rows_to_show = st.slider("Rows to show", 10, 100, 25)
+with more3:
+    refresh_trades = st.button("Refresh government trades")
+
+# Only fetch trades when user clicks refresh, or if we have none yet
+should_fetch_trades = refresh_trades or st.session_state.last_good_trades.empty
 
 try:
-    trades = fetch_capitol_trades(pages=pages, page_size=100)
-
-    if trades.empty:
-        st.info("No trade data returned right now.")
+    if should_fetch_trades:
+        with st.spinner("Fetching government trades..."):
+            trades = fetch_capitol_trades(pages=pages, page_size=100)
+        if not trades.empty:
+            st.session_state.last_good_trades = trades
+            st.session_state.last_good_trades_ts = dt.datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
     else:
-        cutoff = pd.Timestamp.utcnow().tz_localize(None) - pd.Timedelta(days=int(lookback_days))
-        trades_f = trades.copy()
+        trades = st.session_state.last_good_trades
 
-        # Lookback
-        if "Published" in trades_f.columns:
-            trades_f = trades_f[trades_f["Published"].fillna(pd.Timestamp.min) >= cutoff]
+    # If current fetch failed or returned empty, fallback
+    if trades is None or trades.empty:
+        cached = st.session_state.last_good_trades
+        if cached is not None and not cached.empty:
+            trades = cached
+            st.warning("Capitol Trades is temporarily down. Showing last cached results.")
+        else:
+            st.warning("Capitol Trades is temporarily down and no cached results are available yet.")
+            st.markdown("</div>", unsafe_allow_html=True)
+            st.stop()
 
-        # Name filter
-        if trader_query:
-            trades_f = trades_f[trades_f["Politician"].fillna("").str.contains(trader_query, case=False, na=False)]
+    if st.session_state.last_good_trades_ts:
+        st.markdown(f'<div class="muted">Last successful government refresh: {st.session_state.last_good_trades_ts}</div>', unsafe_allow_html=True)
 
-        # Action filter
-        if action_filter != "All":
-            trades_f = trades_f[trades_f["Action"].fillna("").str.contains(action_filter, case=False, na=False)]
+    cutoff = pd.Timestamp.utcnow().tz_localize(None) - pd.Timedelta(days=int(lookback_days))
+    trades_f = trades.copy()
+    trades_f = trades_f[trades_f["Published"].fillna(pd.Timestamp.min) >= cutoff]
 
-        # Make table more understandable
-        display_cols = ["Published", "Trade Date", "Politician", "Party", "Chamber", "State", "Ticker", "Asset", "Action", "Size", "Filed After (days)", "Source"]
-        trades_f = trades_f[display_cols].copy()
+    if trader_query:
+        trades_f = trades_f[trades_f["Politician"].fillna("").str.contains(trader_query, case=False, na=False)]
 
-        # Clean up dates
-        for c in ["Published", "Trade Date"]:
-            trades_f[c] = trades_f[c].dt.strftime("%Y-%m-%d")
+    if action_filter != "All":
+        trades_f = trades_f[trades_f["Action"].fillna("").str.contains(action_filter, case=False, na=False)]
 
-        # Put the most helpful columns first
-        trades_f = trades_f.rename(columns={
-            "Filed After (days)": "Delay (days)"
-        })
+    display_cols = ["Published", "Trade Date", "Politician", "Party", "Chamber", "State", "Ticker", "Asset", "Action", "Size", "Delay (days)", "Source"]
+    trades_f = trades_f[display_cols].copy()
 
-        # Add a quick “how to read this”
-        st.markdown(
-            """
-            <div class="muted">
-              <b>How to read this:</b> “Published” is when the disclosure appeared. “Trade Date” is when the trade occurred.
-              “Delay (days)” shows how late it was filed. “Size” is the reported range, not an exact dollar amount.
-            </div>
-            """,
-            unsafe_allow_html=True
+    for c in ["Published", "Trade Date"]:
+        trades_f[c] = trades_f[c].dt.strftime("%Y-%m-%d")
+
+    st.markdown(
+        """
+        <div class="muted">
+          <b>How to read this:</b> “Published” is when the disclosure appeared. “Trade Date” is when the trade occurred.
+          “Delay (days)” shows how late it was filed. “Size” is a reported range, not an exact amount.
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+    st.write("")
+    st.dataframe(trades_f.head(rows_to_show), width="stretch")
+
+    # Helpful summary: most-mentioned tickers
+    tickers = trades_f["Ticker"].dropna()
+    tickers = tickers[tickers.astype(str).str.len() > 0]
+    if not tickers.empty:
+        top = tickers.value_counts().head(10).reset_index()
+        top.columns = ["Ticker", "Mentions"]
+        bar = px.bar(top, x="Ticker", y="Mentions")
+        bar.update_layout(
+            template="plotly_dark",
+            title=dict(text="Most mentioned tickers (filtered)", x=0.0, xanchor="left", font=dict(size=16)),
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(0,0,0,0)",
+            margin=dict(l=10, r=10, t=50, b=10),
+            height=320,
         )
-        st.write("")
-
-        # Show table
-        st.dataframe(trades_f.head(rows_to_show), width="stretch")
-
-        # Simple summary: most-mentioned tickers in filtered results
-        tickers = trades_f["Ticker"].dropna()
-        tickers = tickers[tickers.astype(str).str.len() > 0]
-        if not tickers.empty:
-            top = tickers.value_counts().head(10).reset_index()
-            top.columns = ["Ticker", "Mentions"]
-            bar = px.bar(top, x="Ticker", y="Mentions")
-            bar.update_layout(
-                template="plotly_dark",
-                title=dict(text="Most mentioned tickers (filtered)", x=0.0, xanchor="left", font=dict(size=16)),
-                paper_bgcolor="rgba(0,0,0,0)",
-                plot_bgcolor="rgba(0,0,0,0)",
-                margin=dict(l=10, r=10, t=50, b=10),
-                height=320,
-            )
-            st.plotly_chart(bar, width="stretch")
+        st.plotly_chart(bar, width="stretch")
 
 except Exception as e:
-    st.warning(f"Government trade data temporarily unavailable: {e}")
+    # (1) Better fallback behavior if 503 persists
+    cached = st.session_state.last_good_trades
+    if cached is not None and not cached.empty:
+        st.warning(f"Capitol Trades is temporarily unavailable ({e}). Showing last cached results.")
+        st.dataframe(cached.head(rows_to_show), width="stretch")
+    else:
+        st.warning(f"Government trade data temporarily unavailable: {e}")
 
 st.markdown("</div>", unsafe_allow_html=True)
 
 # ============================================================
-# Correlation (kept simple + on-demand)
+# Correlation (on-demand)
 # ============================================================
 st.markdown(
     '<div class="section"><div class="section-title">Cross-stock correlation explorer</div>'
@@ -558,11 +571,5 @@ if run_corr:
 
 st.markdown("</div>", unsafe_allow_html=True)
 
-# ============================================================
-# Footer
-# ============================================================
 st.markdown("<hr/>", unsafe_allow_html=True)
-st.markdown(
-    '<div class="muted">Portfolio project • Streamlit • Plotly • yfinance • Capitol Trades (public disclosures)</div>',
-    unsafe_allow_html=True
-)
+st.markdown('<div class="muted">Portfolio project • Streamlit • Plotly • yfinance • Capitol Trades (public disclosures)</div>', unsafe_allow_html=True)

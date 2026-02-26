@@ -8,7 +8,7 @@ import plotly.express as px
 import streamlit as st
 
 # ============================================================
-# Page + Styling
+# Page + Styling (dark-only via CSS)
 # ============================================================
 st.set_page_config(page_title="Stock Insights by Ming Quan", layout="wide")
 
@@ -21,15 +21,18 @@ CSS = """
     --text: rgba(255,255,255,0.92);
     --muted: rgba(255,255,255,0.65);
   }
-  .stApp {
+
+  /* Force dark look regardless of Streamlit theme toggles */
+  html, body, [data-testid="stAppViewContainer"], .stApp {
     background: radial-gradient(1200px 800px at 20% 0%, rgba(110,231,255,0.10), transparent 55%),
                 radial-gradient(1000px 700px at 80% 10%, rgba(255,80,120,0.08), transparent 55%),
-                var(--bg);
-    color: var(--text);
+                var(--bg) !important;
+    color: var(--text) !important;
   }
+
   .block-container { padding-top: 1.4rem; padding-bottom: 2.7rem; max-width: 1200px; }
   h1, h2, h3 { letter-spacing: -0.3px; }
-  [data-testid="stHeader"] { background: transparent; }
+  [data-testid="stHeader"] { background: transparent !important; }
 
   .hero {
     border: 1px solid var(--border);
@@ -83,7 +86,6 @@ CSS = """
 """
 st.markdown(CSS, unsafe_allow_html=True)
 
-# Top hero (removed chip/bubble line)
 st.markdown(
     """
     <div class="hero">
@@ -185,7 +187,6 @@ def fetch_price_data(symbol: str, period: str) -> tuple[pd.DataFrame, str]:
     if not symbol:
         return pd.DataFrame(), "none"
 
-    # Light retry on Yahoo Finance
     for attempt in range(2):
         try:
             df = fetch_from_yahoo_finance(symbol, period)
@@ -224,7 +225,7 @@ def capitol_request_with_retry(url: str, params: dict, retries: int = 4) -> dict
             return r.json()
         except Exception as e:
             last_exc = e
-            time.sleep(min(8.0, 0.8 * (2 ** i)))  # 0.8, 1.6, 3.2, 6.4...
+            time.sleep(min(8.0, 0.8 * (2 ** i)))
     raise last_exc if last_exc else RuntimeError("Capitol Trades request failed.")
 
 @st.cache_data(ttl=1800, show_spinner=False, max_entries=64)
@@ -287,7 +288,6 @@ with opt3:
     with st.expander("Advanced (hidden)"):
         use_log = st.checkbox("Use log scale (raw compare)", value=False, disabled=not bool(compare_symbol))
 
-# Session state
 if "df1" not in st.session_state:
     st.session_state.df1 = pd.DataFrame()
     st.session_state.df2 = pd.DataFrame()
@@ -316,16 +316,16 @@ df2 = st.session_state.df2
 # Price charts
 # ============================================================
 st.markdown('<div class="section"><div class="section-title">Price charts</div>', unsafe_allow_html=True)
-
-# spacing between section header and refresh line
 st.markdown('<div class="spacer-sm"></div>', unsafe_allow_html=True)
 
 if st.session_state.last_fetch:
     st.markdown(f'<div class="muted">Last refresh: {st.session_state.last_fetch}</div>', unsafe_allow_html=True)
+    st.markdown('<div class="spacer-md"></div>', unsafe_allow_html=True)
+else:
     st.markdown('<div class="spacer-sm"></div>', unsafe_allow_html=True)
 
 st.markdown('<div class="muted">Data: Yahoo Finance (with a fallback provider if needed).</div>', unsafe_allow_html=True)
-st.markdown('<div class="spacer-md"></div>', unsafe_allow_html=True)
+st.markdown('<div class="spacer-lg"></div>', unsafe_allow_html=True)
 
 def plot_compare_chart(series_a: pd.Series, name_a: str, series_b: pd.Series, name_b: str, pct_mode: bool) -> go.Figure:
     combined = pd.concat([series_a.rename(name_a), series_b.rename(name_b)], axis=1).dropna()
@@ -336,21 +336,37 @@ def plot_compare_chart(series_a: pd.Series, name_a: str, series_b: pd.Series, na
         y_title = "Price"
 
     fig = go.Figure()
-    fig.add_trace(go.Scatter(x=combined.index, y=combined[name_a], mode="lines", name=name_a,
-                             line=dict(color="red", width=2.6)))
-    fig.add_trace(go.Scatter(x=combined.index, y=combined[name_b], mode="lines", name=name_b,
-                             line=dict(color="royalblue", width=2.6)))
+    fig.add_trace(go.Scatter(
+        x=combined.index, y=combined[name_a],
+        mode="lines", name=name_a,
+        line=dict(color="red", width=2.6)
+    ))
+    fig.add_trace(go.Scatter(
+        x=combined.index, y=combined[name_b],
+        mode="lines", name=name_b,
+        line=dict(color="royalblue", width=2.6)
+    ))
 
     fig.update_layout(
         template="plotly_dark",
         title=dict(text=f"{name_a} vs {name_b}", x=0.0, xanchor="left", font=dict(size=18)),
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
-        margin=dict(l=10, r=10, t=70, b=10),  # extra top margin so title never overlaps plot
-        height=460,
-        legend=dict(orientation="h", yanchor="bottom", y=1.08, xanchor="left", x=0),
+        # Extra top space so title/legend never crowd the plot area
+        margin=dict(l=10, r=10, t=90, b=10),
+        height=480,
         hovermode="x unified",
+
+        # LEGEND: top-right aligned, not overlapping title
+        legend=dict(
+            orientation="h",
+            x=1.0, xanchor="right",
+            y=1.18, yanchor="top",
+            bgcolor="rgba(0,0,0,0)",
+            borderwidth=0
+        ),
     )
+
     fig.update_yaxes(title_text=y_title, showgrid=True, gridcolor="rgba(255,255,255,0.08)")
     fig.update_xaxes(showgrid=False)
 
@@ -368,8 +384,8 @@ def plot_single_close(df: pd.DataFrame, sym: str) -> go.Figure:
         title=dict(text=f"{sym} closing price", x=0.0, xanchor="left", font=dict(size=18)),
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
-        margin=dict(l=10, r=10, t=70, b=10),
-        height=460,
+        margin=dict(l=10, r=10, t=90, b=10),
+        height=480,
         hovermode="x unified",
         showlegend=False,
     )
@@ -385,8 +401,8 @@ def plot_candles(df: pd.DataFrame, sym: str) -> go.Figure:
         title=dict(text=f"{sym} OHLC (candlestick)", x=0.0, xanchor="left", font=dict(size=18)),
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
-        margin=dict(l=10, r=10, t=70, b=10),
-        height=560,
+        margin=dict(l=10, r=10, t=90, b=10),
+        height=580,
         hovermode="x unified",
         showlegend=False,
     )
@@ -401,19 +417,19 @@ else:
         st.plotly_chart(plot_compare_chart(df1["Close"], symbol, df2["Close"], compare_symbol, compare_as_pct), width="stretch")
     else:
         st.plotly_chart(plot_single_close(df1, symbol), width="stretch")
-        st.markdown('<div class="spacer-sm"></div>', unsafe_allow_html=True)
+        st.markdown('<div class="spacer-md"></div>', unsafe_allow_html=True)
         if set(["Open", "High", "Low", "Close"]).issubset(df1.columns):
             st.plotly_chart(plot_candles(df1, symbol), width="stretch")
 
 st.markdown("</div>", unsafe_allow_html=True)
 
 # ============================================================
-# Government trading activity (Capitol Trades)
+# Government trading activity
 # ============================================================
 st.markdown('<div class="section"><div class="section-title">Government trading activity</div>', unsafe_allow_html=True)
 st.markdown('<div class="spacer-sm"></div>', unsafe_allow_html=True)
 st.markdown('<div class="muted">Public trade disclosures aggregated from Capitol Trades.</div>', unsafe_allow_html=True)
-st.markdown('<div class="spacer-md"></div>', unsafe_allow_html=True)
+st.markdown('<div class="spacer-lg"></div>', unsafe_allow_html=True)
 
 filters1, filters2, filters3 = st.columns([1.1, 0.9, 1.0], gap="large")
 with filters1:
@@ -455,7 +471,7 @@ try:
 
     if st.session_state.last_good_trades_ts:
         st.markdown(f'<div class="muted">Last successful refresh: {st.session_state.last_good_trades_ts}</div>', unsafe_allow_html=True)
-        st.markdown('<div class="spacer-sm"></div>', unsafe_allow_html=True)
+        st.markdown('<div class="spacer-md"></div>', unsafe_allow_html=True)
 
     cutoff = pd.Timestamp.utcnow().tz_localize(None) - pd.Timedelta(days=int(lookback_days))
     trades_f = trades.copy()
@@ -498,8 +514,8 @@ try:
             title=dict(text="Most mentioned tickers (filtered)", x=0.0, xanchor="left", font=dict(size=16)),
             paper_bgcolor="rgba(0,0,0,0)",
             plot_bgcolor="rgba(0,0,0,0)",
-            margin=dict(l=10, r=10, t=70, b=10),
-            height=340,
+            margin=dict(l=10, r=10, t=90, b=10),
+            height=360,
         )
         st.plotly_chart(bar, width="stretch")
 
@@ -519,7 +535,7 @@ st.markdown("</div>", unsafe_allow_html=True)
 st.markdown('<div class="section"><div class="section-title">Cross-stock correlation explorer</div>', unsafe_allow_html=True)
 st.markdown('<div class="spacer-sm"></div>', unsafe_allow_html=True)
 st.markdown('<div class="muted">Correlation is computed using daily returns over the selected window.</div>', unsafe_allow_html=True)
-st.markdown('<div class="spacer-md"></div>', unsafe_allow_html=True)
+st.markdown('<div class="spacer-lg"></div>', unsafe_allow_html=True)
 
 corr_cols = st.columns([1.3, 0.9, 0.8], gap="large")
 with corr_cols[0]:
@@ -549,8 +565,8 @@ if run_corr:
             title=dict(text="Correlation matrix", x=0.0, xanchor="left", font=dict(size=16)),
             paper_bgcolor="rgba(0,0,0,0)",
             plot_bgcolor="rgba(0,0,0,0)",
-            margin=dict(l=10, r=10, t=70, b=10),
-            height=540,
+            margin=dict(l=10, r=10, t=90, b=10),
+            height=560,
         )
         st.plotly_chart(heat, width="stretch")
 

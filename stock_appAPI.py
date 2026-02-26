@@ -3,59 +3,115 @@ import datetime as dt
 import requests
 import pandas as pd
 import yfinance as yf
-import plotly.express as px
 import plotly.graph_objects as go
+import plotly.express as px
 import streamlit as st
 
-# -----------------------------
-# Page config + minimal styling
-# -----------------------------
+# ============================================================
+# Page + “Wix-ish” styling (dark, clean, lots of whitespace)
+# ============================================================
 st.set_page_config(page_title="Stock Insight Dashboard", layout="wide")
+
+CSS = """
+<style>
+  :root{
+    --bg:#0b0f14;
+    --panel: rgba(255,255,255,0.06);
+    --panel2: rgba(255,255,255,0.04);
+    --border: rgba(255,255,255,0.10);
+    --text: rgba(255,255,255,0.92);
+    --muted: rgba(255,255,255,0.65);
+    --accent: #6ee7ff;
+  }
+  .stApp {
+    background: radial-gradient(1200px 800px at 20% 0%, rgba(110,231,255,0.10), transparent 55%),
+                radial-gradient(1000px 700px at 80% 10%, rgba(255,80,120,0.08), transparent 55%),
+                var(--bg);
+    color: var(--text);
+  }
+  .block-container { padding-top: 1.4rem; padding-bottom: 2.5rem; max-width: 1200px; }
+  h1, h2, h3 { letter-spacing: -0.3px; }
+  [data-testid="stHeader"] { background: transparent; }
+
+  .hero {
+    border: 1px solid var(--border);
+    background: linear-gradient(180deg, rgba(255,255,255,0.07), rgba(255,255,255,0.03));
+    border-radius: 18px;
+    padding: 18px 18px;
+    margin-bottom: 14px;
+  }
+  .hero-title { font-size: 34px; font-weight: 800; margin: 0; }
+  .hero-sub { color: var(--muted); margin-top: 6px; font-size: 14.5px; line-height: 1.35; }
+  .chip {
+    display:inline-block;
+    padding: 6px 10px;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    font-size: 12.5px;
+    color: var(--muted);
+    background: rgba(255,255,255,0.04);
+    margin-top: 10px;
+  }
+  .section {
+    border: 1px solid var(--border);
+    background: var(--panel2);
+    border-radius: 18px;
+    padding: 14px 14px;
+    margin-top: 14px;
+  }
+  .section-title{
+    font-size: 18px;
+    font-weight: 750;
+    margin: 0 0 8px 0;
+  }
+  .muted { color: var(--muted); }
+  hr { border: none; border-top: 1px solid var(--border); margin: 16px 0; }
+
+  /* Streamlit widgets */
+  .stTextInput input, .stSelectbox select {
+    background: rgba(255,255,255,0.06) !important;
+    border: 1px solid var(--border) !important;
+    color: var(--text) !important;
+    border-radius: 12px !important;
+  }
+  .stButton button {
+    border-radius: 12px !important;
+    border: 1px solid var(--border) !important;
+    background: rgba(255,255,255,0.07) !important;
+    color: var(--text) !important;
+  }
+  .stButton button:hover {
+    border-color: rgba(110,231,255,0.35) !important;
+  }
+
+  /* Dataframe */
+  div[data-testid="stDataFrame"]{
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    overflow: hidden;
+  }
+</style>
+"""
+st.markdown(CSS, unsafe_allow_html=True)
 
 st.markdown(
     """
-    <style>
-      .block-container { padding-top: 1.1rem; padding-bottom: 2rem; }
-      .muted { color: rgba(49,51,63,0.70); font-size: 0.95rem; }
-      .card { border: 1px solid rgba(49,51,63,0.12); border-radius: 14px; padding: 12px 14px; background: white; }
-      hr { margin: 1.0rem 0; }
-    </style>
+    <div class="hero">
+      <p class="hero-title">Stock Insight Dashboard</p>
+      <div class="hero-sub">
+        Compare performance, explore correlations, scan news, and view government trade disclosures.
+        Built with Python, Streamlit, yfinance, and Capitol Trades.
+      </div>
+      <span class="chip">Portfolio project • Data sourced from Yahoo Finance (via yfinance) with a fallback provider when throttled</span>
+    </div>
     """,
-    unsafe_allow_html=True,
+    unsafe_allow_html=True
 )
 
-NEWS_API_KEY = st.secrets.get("NEWS_API_KEY", "")
-
-st.title("Stock Insight Dashboard")
-st.markdown('<div class="muted">Price history, comparisons, correlation, narrative summaries, insider/institutional, news, and government trading.</div>', unsafe_allow_html=True)
-st.markdown("---")
-
-
-# -----------------------------
-# Period helpers
-# -----------------------------
-def period_to_start(period: str) -> dt.date | None:
-    today = dt.date.today()
-    if period == "1mo":
-        return today - dt.timedelta(days=35)
-    if period == "3mo":
-        return today - dt.timedelta(days=100)
-    if period == "6mo":
-        return today - dt.timedelta(days=210)
-    if period == "1y":
-        return today - dt.timedelta(days=370)
-    if period == "2y":
-        return today - dt.timedelta(days=740)
-    if period == "5y":
-        return today - dt.timedelta(days=5 * 370)
-    if period == "ytd":
-        return dt.date(today.year, 1, 1)
-    if period == "max":
-        return None
-    return None
-
-
-def flatten_yf_columns(df: pd.DataFrame) -> pd.DataFrame:
+# ============================================================
+# Helpers
+# ============================================================
+def _flatten_yf_columns(df: pd.DataFrame) -> pd.DataFrame:
     if df is None or df.empty:
         return pd.DataFrame()
     if isinstance(df.columns, pd.MultiIndex):
@@ -64,9 +120,20 @@ def flatten_yf_columns(df: pd.DataFrame) -> pd.DataFrame:
     df = df.dropna()
     return df
 
+def _period_to_start(period: str) -> dt.date | None:
+    today = dt.date.today()
+    if period == "1mo": return today - dt.timedelta(days=35)
+    if period == "3mo": return today - dt.timedelta(days=100)
+    if period == "6mo": return today - dt.timedelta(days=210)
+    if period == "1y":  return today - dt.timedelta(days=370)
+    if period == "2y":  return today - dt.timedelta(days=740)
+    if period == "5y":  return today - dt.timedelta(days=5*370)
+    if period == "ytd": return dt.date(today.year, 1, 1)
+    if period == "max": return None
+    return None
 
-def normalize_pct_change(series: pd.Series) -> pd.Series:
-    s = series.dropna()
+def _normalize_pct_change(s: pd.Series) -> pd.Series:
+    s = s.dropna()
     if s.empty:
         return s
     base = s.iloc[0]
@@ -74,13 +141,16 @@ def normalize_pct_change(series: pd.Series) -> pd.Series:
         return s * 0
     return (s / base - 1) * 100
 
+def _safe_link(url: str | None) -> str:
+    if not url:
+        return ""
+    return url
 
-# -----------------------------
-# Fetchers (Yahoo primary, Stooq fallback)
-# -----------------------------
+# ============================================================
+# Data Fetch: Yahoo primary + Stooq fallback (no key)
+# ============================================================
 @st.cache_data(ttl=3600, show_spinner=False, max_entries=256)
 def fetch_from_yahoo(symbol: str, period: str) -> pd.DataFrame:
-    # Lower request intensity to reduce throttling risk
     df = yf.download(
         symbol,
         period=period,
@@ -89,34 +159,27 @@ def fetch_from_yahoo(symbol: str, period: str) -> pd.DataFrame:
         progress=False,
         threads=False,
     )
-    return flatten_yf_columns(df)
-
+    return _flatten_yf_columns(df)
 
 @st.cache_data(ttl=3600, show_spinner=False, max_entries=256)
 def fetch_from_stooq(symbol: str, period: str) -> pd.DataFrame:
-    """
-    Free fallback provider (no key).
-    For US tickers, Stooq often expects ".us" (e.g., aapl.us).
-    Returns columns: Open, High, Low, Close, Volume with a DatetimeIndex.
-    """
-    sym = symbol.lower()
-    # Try a few common variants
-    candidates = [sym, f"{sym}.us", f"{sym}.us"] if not sym.endswith(".us") else [sym]
+    sym = (symbol or "").strip().lower()
+    if not sym:
+        return pd.DataFrame()
 
-    start = period_to_start(period)
+    start = _period_to_start(period)
+
+    # Try a few common variants
+    candidates = [sym]
+    if not sym.endswith(".us"):
+        candidates.append(f"{sym}.us")
 
     for c in candidates:
         url = f"https://stooq.com/q/d/l/?s={c}&i=d"
         try:
-            r = requests.get(url, timeout=15)
-            r.raise_for_status()
-            df = pd.read_csv(pd.compat.StringIO(r.text)) if hasattr(pd.compat, "StringIO") else pd.read_csv(url)
+            df = pd.read_csv(url)
         except Exception:
-            # If pd.compat.StringIO isn't available, retry using pandas read_csv(url)
-            try:
-                df = pd.read_csv(url)
-            except Exception:
-                continue
+            continue
 
         if df is None or df.empty or "Date" not in df.columns:
             continue
@@ -124,12 +187,9 @@ def fetch_from_stooq(symbol: str, period: str) -> pd.DataFrame:
         df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
         df = df.dropna(subset=["Date"]).set_index("Date").sort_index()
 
-        # Standardize column names to match Yahoo
-        rename_map = {c: c.title() for c in df.columns}
-        df = df.rename(columns=rename_map)
-
-        # Keep only expected columns
-        keep = [c for c in ["Open", "High", "Low", "Close", "Volume"] if c in df.columns]
+        # Standardize names
+        df = df.rename(columns={col: col.title() for col in df.columns})
+        keep = [k for k in ["Open", "High", "Low", "Close", "Volume"] if k in df.columns]
         df = df[keep].dropna()
 
         if start is not None:
@@ -140,15 +200,12 @@ def fetch_from_stooq(symbol: str, period: str) -> pd.DataFrame:
 
     return pd.DataFrame()
 
-
 def fetch_price_data(symbol: str, period: str) -> tuple[pd.DataFrame, str]:
-    """
-    Returns (df, source_name).
-    """
+    symbol = (symbol or "").strip().upper()
     if not symbol:
         return pd.DataFrame(), "none"
 
-    # Try Yahoo first with light retry/backoff
+    # Light retry on Yahoo
     for attempt in range(2):
         try:
             df = fetch_from_yahoo(symbol, period)
@@ -157,17 +214,63 @@ def fetch_price_data(symbol: str, period: str) -> tuple[pd.DataFrame, str]:
         except Exception:
             time.sleep(0.6 * (attempt + 1))
 
-    # Fallback to Stooq
     df2 = fetch_from_stooq(symbol, period)
     if not df2.empty:
         return df2, "stooq"
 
     return pd.DataFrame(), "none"
 
+# ============================================================
+# Capitol Trades fetch (no key)
+# ============================================================
+CAPITOL_BFF_TRADES = "https://bff.capitoltrades.com/trades"
 
-# -----------------------------
-# Inputs (time range under compare)
-# -----------------------------
+@st.cache_data(ttl=1800, show_spinner=False, max_entries=64)
+def fetch_capitol_trades(pages: int = 2, page_size: int = 100) -> pd.DataFrame:
+    rows = []
+    for page in range(1, pages + 1):
+        params = {"page": page, "pageSize": page_size, "per_page": page_size}
+        r = requests.get(CAPITOL_BFF_TRADES, params=params, timeout=20)
+        r.raise_for_status()
+        payload = r.json()
+        data = payload.get("data", []) if isinstance(payload, dict) else []
+
+        for row in data:
+            pol = row.get("politician", {}) or {}
+            asset = row.get("asset", {}) or {}
+
+            politician = f"{pol.get('firstName','')} {pol.get('lastName','')}".strip()
+            ticker = asset.get("assetTicker")
+            if isinstance(ticker, str):
+                ticker = ticker.replace(":US", "")
+
+            rows.append({
+                "Published": pd.to_datetime(row.get("published"), errors="coerce"),
+                "Trade Date": pd.to_datetime(row.get("traded"), errors="coerce"),
+                "Politician": politician,
+                "Party": pol.get("party"),
+                "Chamber": pol.get("chamber"),
+                "State": pol.get("_stateId"),
+                "Ticker": ticker,
+                "Asset": asset.get("assetName"),
+                "Action": row.get("type"),   # Buy/Sell/etc
+                "Size": row.get("size"),     # e.g. "$1,001 - $15,000"
+                "Filed After (days)": row.get("filedAfter"),
+                "Source": row.get("sourceUrl") or row.get("url") or None,
+            })
+
+        time.sleep(0.15)
+
+    df = pd.DataFrame(rows)
+    if df.empty:
+        return df
+
+    df = df.sort_values(by=["Published", "Trade Date"], ascending=False)
+    return df
+
+# ============================================================
+# Inputs
+# ============================================================
 colA, colB = st.columns([1.1, 1.1], gap="large")
 with colA:
     symbol = st.text_input("Primary stock", "AAPL").strip().upper()
@@ -176,126 +279,257 @@ with colB:
 
 range_option = st.selectbox("Time range", ["1mo", "3mo", "6mo", "1y", "2y", "5y", "ytd", "max"], index=2)
 
-opt_left, opt_right = st.columns([1.4, 1.0], gap="large")
-with opt_left:
+opt1, opt2, opt3 = st.columns([1.0, 1.0, 1.2], gap="large")
+with opt1:
     fetch_btn = st.button("Fetch / Refresh Data", type="primary")
-with opt_right:
-    show_pct_compare = st.checkbox("Compare as percent change (recommended)", value=True, disabled=not bool(compare_symbol))
-    with st.expander("Advanced options"):
-        use_log_scale = st.checkbox("Use log scale (raw comparison only)", value=False, disabled=not bool(compare_symbol))
-        show_volume = st.checkbox("Show volume", value=False)
+with opt2:
+    compare_as_pct = st.checkbox("Compare as percent change", value=True, disabled=not bool(compare_symbol))
+with opt3:
+    with st.expander("Advanced (hidden)"):
+        use_log = st.checkbox("Use log scale (raw compare)", value=False, disabled=not bool(compare_symbol))
 
-st.caption("This app fetches only when you click Fetch/Refresh to avoid rate limits on public deployments.")
-
-# -----------------------------
-# Session state for fetched data (prevents auto refetch)
-# -----------------------------
+# Session state: only fetch when user clicks
 if "df1" not in st.session_state:
     st.session_state.df1 = pd.DataFrame()
-    st.session_state.src1 = "none"
-if "df2" not in st.session_state:
     st.session_state.df2 = pd.DataFrame()
+    st.session_state.src1 = "none"
     st.session_state.src2 = "none"
-if "last_fetch" not in st.session_state:
     st.session_state.last_fetch = None
 
 if fetch_btn:
-    with st.spinner("Fetching data..."):
+    with st.spinner("Fetching price data..."):
         df1, src1 = fetch_price_data(symbol, range_option)
         df2, src2 = (pd.DataFrame(), "none")
         if compare_symbol:
             df2, src2 = fetch_price_data(compare_symbol, range_option)
 
-        st.session_state.df1 = df1
-        st.session_state.src1 = src1
-        st.session_state.df2 = df2
-        st.session_state.src2 = src2
+        st.session_state.df1, st.session_state.src1 = df1, src1
+        st.session_state.df2, st.session_state.src2 = df2, src2
         st.session_state.last_fetch = dt.datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
 
 df1 = st.session_state.df1
 df2 = st.session_state.df2
 
-if st.session_state.last_fetch:
-    st.caption(f"Last refresh: {st.session_state.last_fetch}")
-
-# -----------------------------
+# ============================================================
 # Price charts
-# -----------------------------
-st.subheader("Price charts")
+# ============================================================
+st.markdown('<div class="section"><div class="section-title">Price charts</div>', unsafe_allow_html=True)
+
+if st.session_state.last_fetch:
+    st.markdown(f'<div class="muted">Last refresh: {st.session_state.last_fetch}</div>', unsafe_allow_html=True)
+
+# (1) Replace redundant primary/secondary labels with a single line
+st.markdown('<div class="muted">Data taken from Yahoo Finance (via yfinance). If throttled, a fallback provider may be used.</div>', unsafe_allow_html=True)
+
+def plot_compare_chart(series_a: pd.Series, name_a: str, series_b: pd.Series, name_b: str, pct_mode: bool) -> go.Figure:
+    combined = pd.concat([series_a.rename(name_a), series_b.rename(name_b)], axis=1).dropna()
+    if pct_mode:
+        combined = combined.apply(_normalize_pct_change, axis=0)
+        y_title = "Percent change (%)"
+    else:
+        y_title = "Price"
+
+    fig = go.Figure()
+
+    # (2) Force one line red, one line blue
+    fig.add_trace(go.Scatter(
+        x=combined.index, y=combined[name_a],
+        mode="lines",
+        name=name_a,
+        line=dict(color="red", width=2.5)
+    ))
+    fig.add_trace(go.Scatter(
+        x=combined.index, y=combined[name_b],
+        mode="lines",
+        name=name_b,
+        line=dict(color="royalblue", width=2.5)
+    ))
+
+    # (3) Remove title “box”, keep it text only
+    fig.update_layout(
+        template="plotly_dark",
+        title=dict(text=f"{name_a} vs {name_b}", x=0.0, xanchor="left", font=dict(size=18)),
+        paper_bgcolor="rgba(0,0,0,0)",   # transparent so no white/solid block
+        plot_bgcolor="rgba(0,0,0,0)",
+        margin=dict(l=10, r=10, t=50, b=10),
+        height=440,
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
+        hovermode="x unified",
+    )
+    fig.update_yaxes(title_text=y_title, showgrid=True, gridcolor="rgba(255,255,255,0.08)")
+    fig.update_xaxes(showgrid=False)
+
+    if (not pct_mode) and use_log:
+        fig.update_yaxes(type="log")
+
+    return fig
+
+def plot_single_close(df: pd.DataFrame, sym: str) -> go.Figure:
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=df.index, y=df["Close"], mode="lines",
+        name=sym, line=dict(color="royalblue", width=2.5)
+    ))
+    fig.update_layout(
+        template="plotly_dark",
+        title=dict(text=f"{sym} closing price", x=0.0, xanchor="left", font=dict(size=18)),
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        margin=dict(l=10, r=10, t=50, b=10),
+        height=440,
+        hovermode="x unified",
+        showlegend=False,
+    )
+    fig.update_yaxes(title_text="Price", showgrid=True, gridcolor="rgba(255,255,255,0.08)")
+    fig.update_xaxes(showgrid=False)
+    return fig
+
+def plot_candles(df: pd.DataFrame, sym: str) -> go.Figure:
+    fig = go.Figure()
+    fig.add_trace(go.Candlestick(
+        x=df.index,
+        open=df["Open"], high=df["High"], low=df["Low"], close=df["Close"],
+        name=sym
+    ))
+    fig.update_layout(
+        template="plotly_dark",
+        title=dict(text=f"{sym} OHLC (candlestick)", x=0.0, xanchor="left", font=dict(size=18)),
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        margin=dict(l=10, r=10, t=50, b=10),
+        height=520,
+        hovermode="x unified",
+        showlegend=False,
+    )
+    fig.update_yaxes(showgrid=True, gridcolor="rgba(255,255,255,0.08)")
+    fig.update_xaxes(showgrid=False)
+    return fig
 
 if df1.empty:
-    st.warning(
-        "No price data loaded yet (or both Yahoo and fallback source failed). "
-        "Click Fetch/Refresh. If it still fails, try a different ticker."
-    )
+    st.warning("No data loaded yet. Click Fetch / Refresh Data. If it still fails, Yahoo may be throttling—try again in a minute.")
 else:
-    st.info(f"Primary data source: {st.session_state.src1.upper()}")
-
-    if not compare_symbol:
-        st.markdown(f"<div class='card'><b>{symbol}</b> — Close</div>", unsafe_allow_html=True)
-
-        fig = px.line(df1, x=df1.index, y="Close", title=None)
-        fig.update_layout(template="plotly_white", margin=dict(l=10, r=10, t=10, b=10), height=420)
+    if compare_symbol and not df2.empty:
+        s1 = df1["Close"]
+        s2 = df2["Close"]
+        fig = plot_compare_chart(s1, symbol, s2, compare_symbol, compare_as_pct)
         st.plotly_chart(fig, width="stretch")
-
-        if show_volume and "Volume" in df1.columns:
-            vfig = px.bar(df1, x=df1.index, y="Volume", title=None)
-            vfig.update_layout(template="plotly_white", margin=dict(l=10, r=10, t=10, b=10), height=260)
-            st.plotly_chart(vfig, width="stretch")
-
-        # Candlestick
-        if set(["Open", "High", "Low", "Close"]).issubset(df1.columns):
-            st.markdown("<div class='card'><b>OHLC</b> (candlestick)</div>", unsafe_allow_html=True)
-            cfig = go.Figure(
-                data=[go.Candlestick(
-                    x=df1.index,
-                    open=df1["Open"],
-                    high=df1["High"],
-                    low=df1["Low"],
-                    close=df1["Close"],
-                    name=symbol
-                )]
-            )
-            cfig.update_layout(template="plotly_white", margin=dict(l=10, r=10, t=10, b=10), height=520)
-            st.plotly_chart(cfig, width="stretch")
-        else:
-            st.caption("OHLC not available from this source for this symbol.")
     else:
-        if df2.empty:
-            st.warning("Comparison ticker did not load. Try Fetch/Refresh again or choose another ticker.")
-        else:
-            st.info(f"Comparison data source: {st.session_state.src2.upper()}")
+        st.plotly_chart(plot_single_close(df1, symbol), width="stretch")
+        if set(["Open", "High", "Low", "Close"]).issubset(df1.columns):
+            st.plotly_chart(plot_candles(df1, symbol), width="stretch")
 
-            s1 = df1["Close"].rename(symbol)
-            s2 = df2["Close"].rename(compare_symbol)
-            combined = pd.concat([s1, s2], axis=1).dropna()
+st.markdown("</div>", unsafe_allow_html=True)  # close section
 
-            if combined.empty:
-                st.warning("Not enough overlapping dates between the two tickers in this time range.")
-            else:
-                st.markdown(f"<div class='card'><b>{symbol}</b> vs <b>{compare_symbol}</b></div>", unsafe_allow_html=True)
+# ============================================================
+# Government trading activity (Capitol Trades) — clearer
+# ============================================================
+st.markdown(
+    '<div class="section"><div class="section-title">Government trading activity</div>'
+    '<div class="muted">Public trade disclosures aggregated from Capitol Trades. Use filters to narrow results.</div>',
+    unsafe_allow_html=True
+)
 
-                if show_pct_compare:
-                    pct = combined.apply(normalize_pct_change, axis=0)
-                    pfig = px.line(pct, x=pct.index, y=pct.columns, title=None)
-                    pfig.update_layout(template="plotly_white", yaxis_title="Percent change (%)",
-                                       margin=dict(l=10, r=10, t=10, b=10), height=420)
-                    st.plotly_chart(pfig, width="stretch")
-                else:
-                    rfig = px.line(combined, x=combined.index, y=combined.columns, title=None)
-                    if use_log_scale:
-                        rfig.update_yaxes(type="log")
-                    rfig.update_layout(template="plotly_white", yaxis_title="Price",
-                                       margin=dict(l=10, r=10, t=10, b=10), height=420)
-                    st.plotly_chart(rfig, width="stretch")
+filters1, filters2, filters3 = st.columns([1.1, 0.9, 1.0], gap="large")
+with filters1:
+    trader_query = st.text_input("Filter by politician name (e.g., Pelosi)", "").strip()
+with filters2:
+    action_filter = st.selectbox("Action", ["All", "Buy", "Sell"], index=0)
+with filters3:
+    lookback_days = st.selectbox("Lookback window", [7, 14, 30, 90], index=2)
 
-# -----------------------------
-# Correlation (on-demand to avoid rate limiting)
-# -----------------------------
-st.subheader("Cross-stock correlation explorer")
-corr_input = st.text_input("Symbols (comma-separated)", "AAPL,MSFT,GOOGL").strip()
-corr_period = st.selectbox("Correlation time range", ["1mo", "3mo", "6mo", "1y", "2y"], index=2)
-run_corr = st.button("Run correlation (fetches data)")
+more1, more2 = st.columns([1, 1], gap="large")
+with more1:
+    pages = st.slider("How much to pull (pages)", 1, 5, 2)
+with more2:
+    rows_to_show = st.slider("Rows to show", 10, 100, 25)
+
+try:
+    trades = fetch_capitol_trades(pages=pages, page_size=100)
+
+    if trades.empty:
+        st.info("No trade data returned right now.")
+    else:
+        cutoff = pd.Timestamp.utcnow().tz_localize(None) - pd.Timedelta(days=int(lookback_days))
+        trades_f = trades.copy()
+
+        # Lookback
+        if "Published" in trades_f.columns:
+            trades_f = trades_f[trades_f["Published"].fillna(pd.Timestamp.min) >= cutoff]
+
+        # Name filter
+        if trader_query:
+            trades_f = trades_f[trades_f["Politician"].fillna("").str.contains(trader_query, case=False, na=False)]
+
+        # Action filter
+        if action_filter != "All":
+            trades_f = trades_f[trades_f["Action"].fillna("").str.contains(action_filter, case=False, na=False)]
+
+        # Make table more understandable
+        display_cols = ["Published", "Trade Date", "Politician", "Party", "Chamber", "State", "Ticker", "Asset", "Action", "Size", "Filed After (days)", "Source"]
+        trades_f = trades_f[display_cols].copy()
+
+        # Clean up dates
+        for c in ["Published", "Trade Date"]:
+            trades_f[c] = trades_f[c].dt.strftime("%Y-%m-%d")
+
+        # Put the most helpful columns first
+        trades_f = trades_f.rename(columns={
+            "Filed After (days)": "Delay (days)"
+        })
+
+        # Add a quick “how to read this”
+        st.markdown(
+            """
+            <div class="muted">
+              <b>How to read this:</b> “Published” is when the disclosure appeared. “Trade Date” is when the trade occurred.
+              “Delay (days)” shows how late it was filed. “Size” is the reported range, not an exact dollar amount.
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
+        st.write("")
+
+        # Show table
+        st.dataframe(trades_f.head(rows_to_show), width="stretch")
+
+        # Simple summary: most-mentioned tickers in filtered results
+        tickers = trades_f["Ticker"].dropna()
+        tickers = tickers[tickers.astype(str).str.len() > 0]
+        if not tickers.empty:
+            top = tickers.value_counts().head(10).reset_index()
+            top.columns = ["Ticker", "Mentions"]
+            bar = px.bar(top, x="Ticker", y="Mentions")
+            bar.update_layout(
+                template="plotly_dark",
+                title=dict(text="Most mentioned tickers (filtered)", x=0.0, xanchor="left", font=dict(size=16)),
+                paper_bgcolor="rgba(0,0,0,0)",
+                plot_bgcolor="rgba(0,0,0,0)",
+                margin=dict(l=10, r=10, t=50, b=10),
+                height=320,
+            )
+            st.plotly_chart(bar, width="stretch")
+
+except Exception as e:
+    st.warning(f"Government trade data temporarily unavailable: {e}")
+
+st.markdown("</div>", unsafe_allow_html=True)
+
+# ============================================================
+# Correlation (kept simple + on-demand)
+# ============================================================
+st.markdown(
+    '<div class="section"><div class="section-title">Cross-stock correlation explorer</div>'
+    '<div class="muted">Uses daily returns over the selected window. Fetches multiple symbols, so keep it focused.</div>',
+    unsafe_allow_html=True
+)
+
+corr_cols = st.columns([1.3, 0.9, 0.8], gap="large")
+with corr_cols[0]:
+    corr_input = st.text_input("Symbols (comma-separated)", "AAPL,MSFT,GOOGL").strip()
+with corr_cols[1]:
+    corr_period = st.selectbox("Correlation range", ["1mo", "3mo", "6mo", "1y", "2y"], index=2)
+with corr_cols[2]:
+    run_corr = st.button("Run correlation")
 
 if run_corr:
     syms = [s.strip().upper() for s in corr_input.split(",") if s.strip()][:10]
@@ -307,69 +541,28 @@ if run_corr:
                 closes[s] = dfx["Close"]
 
     if len(closes) < 2:
-        st.warning("Could not load enough symbols for correlation (provider may be rate-limiting).")
+        st.warning("Could not load enough symbols to compute correlation (provider may be throttling).")
     else:
         corr_df = pd.DataFrame(closes).dropna()
         corr = corr_df.pct_change().dropna().corr()
-        heat = px.imshow(corr, text_auto=True, aspect="auto", title=None)
-        heat.update_layout(template="plotly_white", margin=dict(l=10, r=10, t=10, b=10), height=500)
+        heat = px.imshow(corr, text_auto=True, aspect="auto")
+        heat.update_layout(
+            template="plotly_dark",
+            title=dict(text="Correlation matrix", x=0.0, xanchor="left", font=dict(size=16)),
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(0,0,0,0)",
+            margin=dict(l=10, r=10, t=50, b=10),
+            height=520,
+        )
         st.plotly_chart(heat, width="stretch")
 
-# -----------------------------
-# Analyst summary
-# -----------------------------
-st.subheader("Analyst-style summary")
+st.markdown("</div>", unsafe_allow_html=True)
 
-def generate_narrative(df: pd.DataFrame, sym: str) -> str:
-    if df is None or df.empty or "Close" not in df.columns or len(df) < 5:
-        return "Not enough data to generate a summary for this time range."
-
-    close = df["Close"].dropna()
-    if close.empty:
-        return "Not enough closing prices to generate a summary."
-
-    start = float(close.iloc[0])
-    end = float(close.iloc[-1])
-    pct = ((end / start) - 1.0) * 100.0 if start else 0.0
-
-    daily_returns = close.pct_change().dropna()
-    vol = (daily_returns.std() * (252 ** 0.5) * 100.0) if len(daily_returns) > 10 else None
-
-    roll_max = close.cummax()
-    dd = (close / roll_max - 1.0)
-    mdd = (dd.min() * 100.0) if not dd.empty else None
-
-    direction = "up" if pct >= 0 else "down"
-    tone = "strong" if abs(pct) >= 10 else "moderate" if abs(pct) >= 3 else "mild"
-
-    parts = [
-        f"{sym} is {direction} {abs(pct):.2f}% over the selected period ({close.index[0].date()} to {close.index[-1].date()}).",
-        f"The move is {tone} for this window."
-    ]
-    if vol is not None:
-        parts.append(f"Estimated annualized volatility is ~{vol:.1f}%.")
-    if mdd is not None:
-        parts.append(f"Maximum drawdown during the window was {mdd:.1f}%.")
-
-    return " ".join(parts)
-
-if not df1.empty:
-    st.info(generate_narrative(df1, symbol))
-else:
-    st.info("Load price data to generate a narrative summary.")
-
-# -----------------------------
-# Government trades (Capitol Trades) – optional section stays separate
-# -----------------------------
-st.subheader("Government trading activity (Capitol Trades)")
-st.caption("This section can be added next; it does not depend on Yahoo. If you want it live now, say so and I’ll merge it back in cleanly.")
-
-# -----------------------------
-# Debug
-# -----------------------------
-with st.expander("Debug: view raw data"):
-    st.write("Primary data")
-    st.dataframe(df1.tail(20), width="stretch")
-    if compare_symbol:
-        st.write("Comparison data")
-        st.dataframe(df2.tail(20), width="stretch")
+# ============================================================
+# Footer
+# ============================================================
+st.markdown("<hr/>", unsafe_allow_html=True)
+st.markdown(
+    '<div class="muted">Portfolio project • Streamlit • Plotly • yfinance • Capitol Trades (public disclosures)</div>',
+    unsafe_allow_html=True
+)

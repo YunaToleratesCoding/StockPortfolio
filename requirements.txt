@@ -1,9 +1,5 @@
-streamlit
-yfinance
-pandas
-plotly
-seaborn
-matplotlib
-requests
-beautifulsoup4
-
+streamlit==1.54.0
+yfinance==0.2.65
+pandas==2.3.3
+plotly==6.5.2
+requests==2.32.5

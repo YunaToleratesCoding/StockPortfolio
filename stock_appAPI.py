@@ -6,152 +6,248 @@ import plotly.express as px
 import streamlit as st
 import seaborn as sns
 import matplotlib.pyplot as plt
-from io import StringIO
-import datetime
+from bs4 import BeautifulSoup
 
-# API Keys
-NEWS_API_KEY = "pub_b94aa5942cf24b209ce26666d30b5207"  # Replace with your actual News API key
-FMP_API_KEY = "fjU7e0CFC4drXEAbHNQMOAzseiEBty9B"  # Replace with your FinancialModelingPrep key
+# ---------- PAGE CONFIG ----------
+st.set_page_config(
+    page_title="Stock Insight Dashboard",
+    layout="wide"
+)
 
-st.set_page_config(page_title="Stock Insight Dashboard", layout="wide")
-st.title("\U0001F4C8 Stock Insight Dashboard")
+NEWS_API_KEY = "pub_b94aa5942cf24b209ce26666d30b5207"
 
-symbol = st.text_input("Enter a stock symbol (e.g., AAPL):", "AAPL").upper()
-compare_symbol = st.text_input("Compare with another symbol (optional):").upper()
+# ---------- HEADER ----------
+st.markdown(
+    """
+    <h1 style="margin-bottom:0">Stock Insight Dashboard</h1>
+    <p style="color:#555;font-size:16px;margin-top:4px">
+        Interactive stock analysis tool for comparing performance, correlations,
+        insider activity, and market news.
+    </p>
+    """,
+    unsafe_allow_html=True,
+)
 
-# Time range filter
-range_option = st.selectbox("Select time range:", ["1mo", "3mo", "6mo", "1y", "2y", "5y", "ytd", "max"], index=2)
+st.markdown("---")
 
-# Fetch stock data
-def fetch_stock_data(symbol):
-    return yf.download(symbol, period=range_option)
+# ---------- INPUT AREA ----------
+col_left, col_right = st.columns([2, 1])
 
-# Display price chart
-def show_price_chart(df, symbol):
-    fig = px.line(df, x=df.index, y="Close", title=f"Closing Prices for {symbol}")
-    st.plotly_chart(fig, use_container_width=True)
+with col_left:
+    symbol = st.text_input("Primary stock symbol", "AAPL").upper().strip()
+    compare_symbol = st.text_input("Compare with another symbol (optional)", "").upper().strip()
 
-# Plotting
-if not compare_symbol:
-    df = fetch_stock_data(symbol)
+with col_right:
+    range_option = st.selectbox(
+        "Time range",
+        ["1mo", "3mo", "6mo", "1y", "2y", "5y", "ytd", "max"],
+        index=2,
+    )
+
+# ---------- DATA FETCH ----------
+def fetch_stock_data(sym):
+    if not sym:
+        return pd.DataFrame()
+    df = yf.download(sym, period=range_option)
     if isinstance(df.columns, pd.MultiIndex):
-        df.columns = [col[0] for col in df.columns]
+        df.columns = [c[0] for c in df.columns]
+    return df
 
-    if not df.empty:
-        st.subheader(f"\U0001F4C8 Price Chart for {symbol}")
-        st.plotly_chart(px.line(df, x=df.index, y="Close", title=f"{symbol} Closing Prices"), use_container_width=True)
+df = fetch_stock_data(symbol)
 
-        st.subheader("\U0001F50D OHLC Chart")
-        fig = px.line(df, x=df.index, y=["Open", "High", "Low", "Close"], title=f"OHLC for {symbol}")
-        st.plotly_chart(fig, use_container_width=True)
+# =========================================================
+# PRICE ANALYSIS
+# =========================================================
+st.markdown("## Price Analysis")
 
+if df.empty:
+    st.warning("Could not load data for that symbol.")
 else:
-    df1 = fetch_stock_data(symbol)
-    df2 = fetch_stock_data(compare_symbol)
 
-    if isinstance(df1.columns, pd.MultiIndex):
-        df1.columns = [col[0] for col in df1.columns]
-    if isinstance(df2.columns, pd.MultiIndex):
-        df2.columns = [col[0] for col in df2.columns]
+    # SINGLE STOCK VIEW
+    if not compare_symbol:
 
-    if not df1.empty and not df2.empty:
-        st.subheader(f"\U0001F4C8 Comparing {symbol} vs {compare_symbol}")
-        combined = pd.concat([df1["Close"], df2["Close"]], axis=1)
-        combined.columns = [symbol, compare_symbol]
-        st.line_chart(combined)
+        st.subheader(f"{symbol} Closing Price")
 
-# Cross-stock correlation
-st.subheader("\U0001F517 Cross-Stock Correlation")
-correlation_symbols = st.text_input("Enter multiple symbols to check correlation (comma separated):", "AAPL,MSFT,GOOGL")
-correlation_list = [s.strip().upper() for s in correlation_symbols.split(",") if s.strip()]
+        st.plotly_chart(
+            px.line(df, x=df.index, y="Close"),
+            use_container_width=True,
+        )
 
-correlation_data = {}
-for sym in correlation_list:
-    try:
-        data = fetch_stock_data(sym)
-        if isinstance(data.columns, pd.MultiIndex):
-            data.columns = [col[0] for col in data.columns]
-        correlation_data[sym] = data["Close"]
-    except Exception as e:
-        st.warning(f"Could not fetch data for {sym}: {e}")
+        st.subheader("OHLC")
+        st.plotly_chart(
+            px.line(df, x=df.index, y=["Open", "High", "Low", "Close"]),
+            use_container_width=True,
+        )
 
-if correlation_data:
-    corr_df = pd.DataFrame(correlation_data).dropna()
-    st.write("Correlation Matrix (Closing Prices):")
-    fig, ax = plt.subplots()
-    sns.heatmap(corr_df.corr(), annot=True, cmap="coolwarm", ax=ax)
-    st.pyplot(fig)
-
-# Narrative summary
-def generate_narrative(df, symbol):
-    recent_change = df["Close"].iloc[-1] - df["Close"].iloc[0]
-    pct_change = (recent_change / df["Close"].iloc[0]) * 100
-    summary = f"{symbol} changed {recent_change:.2f} USD ({pct_change:.2f}%) over the selected period."
-    if pct_change > 5:
-        summary += " This may indicate strong investor confidence."
-    elif pct_change < -5:
-        summary += " This decline might be due to sector rotation or recent negative news."
+    # COMPARISON VIEW
     else:
-        summary += " The stock remained relatively stable."
-    return summary
 
-if 'df' in locals() and not df.empty:
-    st.subheader("\U0001F9E0 Analyst-Style Summary")
-    st.info(generate_narrative(df, symbol))
+        df2 = fetch_stock_data(compare_symbol)
 
-# Insider and institutional activity (FMP API)
-st.subheader("\U0001F3DB\ufe0f Insider & Institutional Activity")
-
-def fetch_insider_and_institutional(symbol):
-    insider_url = f"https://financialmodelingprep.com/api/v4/insider-trading?symbol={symbol}&apikey={FMP_API_KEY}"
-    institution_url = f"https://financialmodelingprep.com/api/v3/institutional-holder/{symbol}?apikey={FMP_API_KEY}"
-    try:
-        insider_resp = requests.get(insider_url).json()
-        institution_resp = requests.get(institution_url).json()
-
-        if isinstance(insider_resp, list) and insider_resp:
-            st.markdown("**Recent Insider Trades:**")
-            for trade in insider_resp[:5]:
-                st.markdown(f"- {trade['transactionDate']} - {trade['reportingCik']} - {trade['transactionType']} {trade['securitiesTransacted']} shares")
-
-        if isinstance(institution_resp, list) and institution_resp:
-            st.markdown("**Major Institutional Holders:**")
-            for holder in institution_resp[:5]:
-                st.markdown(f"- {holder['holder']} holds {holder['shares']} shares")
-
-    except Exception as e:
-        st.warning(f"Error fetching insider/institutional data: {e}")
-
-if FMP_API_KEY != "YOUR_FMP_API_KEY":
-    fetch_insider_and_institutional(symbol)
-else:
-    st.info("Add your FMP API key to show insider and institutional data.")
-
-# Event-driven news
-st.subheader("\U0001F4F0 Event-Driven Insights")
-
-def fetch_news(symbol):
-    if NEWS_API_KEY == "YOUR_API_KEY_HERE":
-        return "No API key provided. News will not be displayed."
-
-    url = f"https://newsdata.io/api/1/news?apikey={NEWS_API_KEY}&q={symbol}&language=en"
-    try:
-        response = requests.get(url)
-        data = response.json()
-        if data.get("status") == "success" and data.get("results"):
-            return data["results"][:5]
+        if df2.empty:
+            st.warning(f"Could not load comparison symbol: {compare_symbol}")
         else:
-            return []
-    except Exception as e:
-        return f"Error fetching news: {e}"
 
-news_data = fetch_news(symbol)
-if isinstance(news_data, list):
-    for item in news_data:
+            st.subheader(f"Comparing {symbol} vs {compare_symbol}")
+
+            combined = pd.concat(
+                [df["Close"].rename(symbol), df2["Close"].rename(compare_symbol)],
+                axis=1
+            ).dropna()
+
+            # NORMALIZATION TOGGLE
+            show_pct = st.toggle(
+                "Normalize to percentage change (compare performance instead of price)",
+                value=True
+            )
+
+            if show_pct:
+                combined = (combined / combined.iloc[0] - 1) * 100
+                st.caption("Performance indexed to starting date (0%).")
+
+            st.line_chart(combined)
+
+            # ADVANCED OPTIONS (HIDDEN)
+            with st.expander("Advanced chart options"):
+                log_scale = st.checkbox("Use logarithmic scale")
+
+                if log_scale:
+                    st.write("Log scale view:")
+
+                    fig = px.line(combined, x=combined.index, y=combined.columns)
+                    fig.update_yaxes(type="log")
+
+                    st.plotly_chart(fig, use_container_width=True)
+
+# =========================================================
+# CORRELATION
+# =========================================================
+st.markdown("## Cross-Stock Correlation")
+
+corr_input = st.text_input(
+    "Symbols (comma separated)",
+    "AAPL, MSFT, GOOGL",
+)
+
+corr_syms = [s.strip().upper() for s in corr_input.split(",") if s.strip()]
+
+corr_data = {}
+for sym in corr_syms:
+    tmp = fetch_stock_data(sym)
+    if not tmp.empty:
+        corr_data[sym] = tmp["Close"]
+
+if corr_data:
+    corr_df = pd.DataFrame(corr_data).dropna()
+
+    if not corr_df.empty:
+        fig, ax = plt.subplots()
+        sns.heatmap(corr_df.corr(), annot=True, cmap="coolwarm", ax=ax)
+        st.pyplot(fig)
+
+# =========================================================
+# ANALYST SUMMARY
+# =========================================================
+st.markdown("## Analyst Summary")
+
+def generate_summary(df, sym):
+    if df.empty or len(df) < 2:
+        return "Not enough data."
+
+    change = df["Close"].iloc[-1] - df["Close"].iloc[0]
+    pct = (change / df["Close"].iloc[0]) * 100
+
+    text = f"{sym} moved {change:.2f} USD ({pct:.2f}%) over the selected period. "
+
+    if pct > 5:
+        text += "Momentum appears positive."
+    elif pct < -5:
+        text += "Recent trend is negative."
+    else:
+        text += "Price movement has been relatively stable."
+
+    return text
+
+if not df.empty:
+    st.info(generate_summary(df, symbol))
+
+# =========================================================
+# INSIDER DATA (FINVIZ SCRAPE)
+# =========================================================
+st.markdown("## Insider Trading Snapshot")
+
+@st.cache_data(ttl=3600)
+def fetch_insider(sym):
+    try:
+        url = f"https://finviz.com/quote.ashx?t={sym}"
+        headers = {"User-Agent": "Mozilla/5.0"}
+        r = requests.get(url, headers=headers, timeout=10)
+
+        soup = BeautifulSoup(r.text, "html.parser")
+        table = soup.find("table", class_="body-table")
+
+        rows = table.find_all("tr") if table else []
+
+        data = []
+        for row in rows:
+            cols = row.find_all("td")
+            if len(cols) == 7:
+                data.append([c.get_text(strip=True) for c in cols])
+
+        return pd.DataFrame(
+            data,
+            columns=[
+                "Insider",
+                "Relationship",
+                "Date",
+                "Transaction",
+                "Cost",
+                "Shares",
+                "Value",
+            ],
+        )
+    except:
+        return pd.DataFrame()
+
+insider_df = fetch_insider(symbol)
+
+if insider_df.empty:
+    st.info("No insider data found.")
+else:
+    st.dataframe(insider_df)
+
+# =========================================================
+# NEWS
+# =========================================================
+st.markdown("## Event-Driven Insights")
+
+def fetch_news(sym):
+    url = f"https://newsdata.io/api/1/news?apikey={NEWS_API_KEY}&q={sym}&language=en"
+    try:
+        r = requests.get(url, timeout=10)
+        data = r.json()
+        if data.get("results"):
+            return data["results"][:5]
+    except:
+        pass
+    return []
+
+news_items = fetch_news(symbol)
+
+if news_items:
+    for item in news_items:
         st.markdown(f"**{item['title']}**")
-        st.markdown(f"{item['pubDate']} - [{item['link']}]({item['link']})")
+        st.markdown(f"{item['pubDate']} — [Link]({item['link']})")
         st.write("")
-elif isinstance(news_data, str):
-    st.warning(news_data)
 else:
     st.info("No recent news found.")
+
+# =========================================================
+# FOOTER
+# =========================================================
+st.markdown("---")
+st.markdown(
+    "<p style='font-size:13px;color:#777'>Built as a portfolio project using Python, Streamlit, yfinance, Plotly, and external APIs.</p>",
+    unsafe_allow_html=True,
+)

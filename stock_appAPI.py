@@ -1,5 +1,5 @@
-import os
 import datetime as dt
+import time
 import requests
 import yfinance as yf
 import pandas as pd
@@ -15,14 +15,9 @@ from bs4 import BeautifulSoup
 st.set_page_config(page_title="Stock Insight Dashboard", layout="wide")
 
 # =========================
-# Keys (put these in Streamlit secrets for public apps)
+# Secrets / Keys
 # =========================
-# NewsData.io key (you already use this)
 NEWS_API_KEY = st.secrets.get("NEWS_API_KEY", "pub_b94aa5942cf24b209ce26666d30b5207")
-
-# Optional: Quiver Quant API key for Congress trades
-# Quiver requires an API token to access datasets like Congress Trading. :contentReference[oaicite:1]{index=1}
-QUIVER_API_KEY = st.secrets.get("QUIVER_API_KEY", "")
 
 # =========================
 # Header
@@ -52,6 +47,7 @@ with left:
         ["1mo", "3mo", "6mo", "1y", "2y", "5y", "ytd", "max"],
         index=2,
     )
+    fetch_btn = st.button("Fetch / Refresh Data", type="primary")
 
 with right:
     st.subheader("Display options")
@@ -67,99 +63,65 @@ with right:
 
 st.markdown(
     """
-    **How to use**
-    - Enter a ticker (e.g., AAPL).
-    - Optional: enter a second ticker to compare.
-    - Use normalization when comparing different-priced stocks.
+    **Tip:** On a public deployment, data providers may rate-limit.  
+    This app caches results and only fetches new prices when you click **Fetch / Refresh Data**.
     """
 )
 
 # =========================
 # Data helpers
 # =========================
-@st.cache_data(ttl=900)
-def fetch_stock_data(sym: str, period: str) -> pd.DataFrame:
-    if not sym:
-        return pd.DataFrame()
-    df = yf.download(sym, period=period, auto_adjust=False, progress=False)
+def _flatten_cols(df: pd.DataFrame) -> pd.DataFrame:
     if df is None or df.empty:
         return pd.DataFrame()
-
-    # Flatten MultiIndex columns if returned
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = [c[0] for c in df.columns]
-
-    df = df.dropna()
     return df
+
+@st.cache_data(ttl=3600, show_spinner=False, max_entries=256)  # cache 1 hour
+def fetch_stock_data_cached(sym: str, period: str) -> pd.DataFrame:
+    """
+    Cached Yahoo fetch. Kept intentionally simple/robust.
+    If Yahoo throttles, callers handle empty df.
+    """
+    if not sym:
+        return pd.DataFrame()
+
+    # Retry lightly (helps with transient issues)
+    for attempt in range(2):
+        try:
+            df = yf.download(sym, period=period, auto_adjust=False, progress=False, threads=False)
+            df = _flatten_cols(df).dropna()
+            return df
+        except Exception:
+            # brief backoff
+            time.sleep(0.7 * (attempt + 1))
+            continue
+
+    return pd.DataFrame()
 
 def add_mas(df: pd.DataFrame) -> pd.DataFrame:
     out = df.copy()
-    if "Close" in out.columns:
+    if "Close" in out.columns and len(out) >= 20:
         out["MA20"] = out["Close"].rolling(20).mean()
+    if "Close" in out.columns and len(out) >= 50:
         out["MA50"] = out["Close"].rolling(50).mean()
     return out
 
-def make_line_fig(df: pd.DataFrame, title: str, y_cols: list[str]) -> go.Figure:
-    fig = go.Figure()
-    for c in y_cols:
-        if c in df.columns:
-            fig.add_trace(go.Scatter(x=df.index, y=df[c], mode="lines", name=c))
-    fig.update_layout(
-        title=title,
-        template="plotly_white",
-        hovermode="x unified",
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
-        margin=dict(l=10, r=10, t=50, b=10),
-        height=420,
-    )
-    if use_log:
-        fig.update_yaxes(type="log")
-    return fig
-
-def make_candle_fig(df: pd.DataFrame, title: str) -> go.Figure:
-    fig = go.Figure()
-    fig.add_trace(go.Candlestick(
-        x=df.index,
-        open=df["Open"] if "Open" in df.columns else None,
-        high=df["High"] if "High" in df.columns else None,
-        low=df["Low"] if "Low" in df.columns else None,
-        close=df["Close"] if "Close" in df.columns else None,
-        name="OHLC"
-    ))
-    if show_ma:
-        if "MA20" in df.columns:
-            fig.add_trace(go.Scatter(x=df.index, y=df["MA20"], mode="lines", name="MA20"))
-        if "MA50" in df.columns:
-            fig.add_trace(go.Scatter(x=df.index, y=df["MA50"], mode="lines", name="MA50"))
-
-    fig.update_layout(
-        title=title,
-        template="plotly_white",
-        hovermode="x unified",
-        margin=dict(l=10, r=10, t=50, b=10),
-        height=520,
-        showlegend=True,
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
-    )
-    if use_log:
-        fig.update_yaxes(type="log")
-    return fig
-
 def compute_metrics(df: pd.DataFrame) -> dict:
-    if df is None or df.empty or "Close" not in df.columns:
+    if df is None or df.empty or "Close" not in df.columns or len(df) < 2:
         return {}
     close = df["Close"].dropna()
     if len(close) < 2:
         return {}
+
     last = float(close.iloc[-1])
     prev = float(close.iloc[-2])
     day_pct = (last / prev - 1) * 100 if prev else 0.0
 
-    # period change
     first = float(close.iloc[0])
     period_pct = (last / first - 1) * 100 if first else 0.0
 
-    # simple vol estimate (std of daily returns)
     rets = close.pct_change().dropna()
     vol = float(rets.std() * 100) if len(rets) > 5 else float("nan")
 
@@ -171,24 +133,91 @@ def compute_metrics(df: pd.DataFrame) -> dict:
         "Last Date": df.index[-1].date(),
     }
 
-# =========================
-# Load data
-# =========================
-df1 = fetch_stock_data(symbol, range_option)
-df2 = fetch_stock_data(compare_symbol, range_option) if compare_symbol else pd.DataFrame()
+def plot_line(df: pd.DataFrame, title: str, y_cols: list[str], y_title: str = "") -> go.Figure:
+    fig = go.Figure()
+    for c in y_cols:
+        if c in df.columns:
+            fig.add_trace(go.Scatter(x=df.index, y=df[c], mode="lines", name=c))
+    fig.update_layout(
+        title=title,
+        template="plotly_white",
+        hovermode="x unified",
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
+        margin=dict(l=10, r=10, t=55, b=10),
+        height=420,
+    )
+    fig.update_yaxes(title_text=y_title)
+    if use_log:
+        fig.update_yaxes(type="log")
+    return fig
 
-if show_ma and not df1.empty:
+def plot_candles(df: pd.DataFrame, title: str) -> go.Figure:
+    fig = go.Figure()
+    fig.add_trace(go.Candlestick(
+        x=df.index,
+        open=df["Open"],
+        high=df["High"],
+        low=df["Low"],
+        close=df["Close"],
+        name="OHLC"
+    ))
+    if show_ma:
+        if "MA20" in df.columns:
+            fig.add_trace(go.Scatter(x=df.index, y=df["MA20"], mode="lines", name="MA20"))
+        if "MA50" in df.columns:
+            fig.add_trace(go.Scatter(x=df.index, y=df["MA50"], mode="lines", name="MA50"))
+    fig.update_layout(
+        title=title,
+        template="plotly_white",
+        hovermode="x unified",
+        margin=dict(l=10, r=10, t=55, b=10),
+        height=520,
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
+    )
+    if use_log:
+        fig.update_yaxes(type="log")
+    return fig
+
+# =========================
+# Session state: store last fetched data
+# =========================
+if "df1" not in st.session_state:
+    st.session_state.df1 = pd.DataFrame()
+if "df2" not in st.session_state:
+    st.session_state.df2 = pd.DataFrame()
+if "last_fetch" not in st.session_state:
+    st.session_state.last_fetch = None
+
+# Only fetch when user clicks (prevents constant reruns from spamming Yahoo)
+if fetch_btn:
+    with st.spinner("Fetching market data..."):
+        st.session_state.df1 = fetch_stock_data_cached(symbol, range_option)
+        st.session_state.df2 = fetch_stock_data_cached(compare_symbol, range_option) if compare_symbol else pd.DataFrame()
+        st.session_state.last_fetch = dt.datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
+
+df1 = st.session_state.df1
+df2 = st.session_state.df2
+
+# Add MAs after fetch
+if not df1.empty and show_ma:
     df1 = add_mas(df1)
-if show_ma and not df2.empty:
+if not df2.empty and show_ma:
     df2 = add_mas(df2)
 
+# Show last fetch time
+if st.session_state.last_fetch:
+    st.caption(f"Last refresh: {st.session_state.last_fetch}")
+
 # =========================
-# Price Analysis section
+# Price Analysis
 # =========================
 st.markdown("## Price Analysis")
 
 if df1.empty:
-    st.warning("Could not load data for that symbol. Please check the ticker and try again.")
+    st.warning(
+        "No data loaded yet (or Yahoo throttled the request). "
+        "Click **Fetch / Refresh Data**. If it still fails, wait a minute and try again."
+    )
 else:
     m = compute_metrics(df1)
     if m:
@@ -199,82 +228,90 @@ else:
         c4.metric("Daily Vol (std)", f"{m['Vol (daily std %)']:.2f}%" if m["Vol (daily std %)"] == m["Vol (daily std %)"] else "n/a")
 
     if compare_symbol and not df2.empty:
-        # Comparison chart (raw or normalized)
+        st.subheader(f"{symbol} vs {compare_symbol}")
+
         combined = pd.concat(
             [df1["Close"].rename(symbol), df2["Close"].rename(compare_symbol)],
             axis=1
         ).dropna()
 
-        st.subheader(f"{symbol} vs {compare_symbol}")
-
-        if normalize_compare:
-            combined = (combined / combined.iloc[0] - 1) * 100
-            fig = make_line_fig(combined, "Comparison (Normalized % Change)", [symbol, compare_symbol])
-            fig.update_yaxes(title_text="Percent change (%)")
+        if combined.empty:
+            st.info("Not enough overlapping dates to compare.")
         else:
-            fig = make_line_fig(combined, "Comparison (Raw Close Price)", [symbol, compare_symbol])
-            fig.update_yaxes(title_text="Price")
+            if normalize_compare:
+                norm = (combined / combined.iloc[0] - 1) * 100
+                st.plotly_chart(
+                    plot_line(norm, "Comparison (Normalized % Change)", [symbol, compare_symbol], y_title="Percent change (%)"),
+                    width="stretch"
+                )
+            else:
+                st.plotly_chart(
+                    plot_line(combined, "Comparison (Raw Close Price)", [symbol, compare_symbol], y_title="Price"),
+                    width="stretch"
+                )
 
-        st.plotly_chart(fig, use_container_width=True)
-
-        with st.expander("Show each ticker’s own price chart"):
-            st.plotly_chart(
-                make_line_fig(df1, f"{symbol} Close", ["Close"] + (["MA20", "MA50"] if show_ma else [])),
-                use_container_width=True
-            )
-            st.plotly_chart(
-                make_line_fig(df2, f"{compare_symbol} Close", ["Close"] + (["MA20", "MA50"] if show_ma else [])),
-                use_container_width=True
-            )
-
+            with st.expander("Show each ticker’s own chart"):
+                st.plotly_chart(
+                    plot_line(df1, f"{symbol} Close", ["Close"] + (["MA20", "MA50"] if show_ma else []), y_title="Price"),
+                    width="stretch"
+                )
+                st.plotly_chart(
+                    plot_line(df2, f"{compare_symbol} Close", ["Close"] + (["MA20", "MA50"] if show_ma else []), y_title="Price"),
+                    width="stretch"
+                )
     else:
         # Single stock view
-        if chart_type == "Line":
-            y_cols = ["Close"] + (["MA20", "MA50"] if show_ma else [])
-            fig = make_line_fig(df1, f"{symbol} Close", y_cols)
-            fig.update_yaxes(title_text="Price")
-            st.plotly_chart(fig, use_container_width=True)
-        else:
-            # Candlestick
+        if chart_type == "Candlestick":
             needed = {"Open", "High", "Low", "Close"}
-            if not needed.issubset(set(df1.columns)):
-                st.info("Candlestick view needs Open/High/Low/Close columns; falling back to line chart.")
-                y_cols = ["Close"] + (["MA20", "MA50"] if show_ma else [])
-                st.plotly_chart(make_line_fig(df1, f"{symbol} Close", y_cols), use_container_width=True)
+            if needed.issubset(df1.columns):
+                st.plotly_chart(plot_candles(df1, f"{symbol} Candlestick"), width="stretch")
             else:
-                st.plotly_chart(make_candle_fig(df1, f"{symbol} Candlestick"), use_container_width=True)
+                st.info("Candlestick view requires OHLC columns. Showing line chart instead.")
+                st.plotly_chart(
+                    plot_line(df1, f"{symbol} Close", ["Close"] + (["MA20", "MA50"] if show_ma else []), y_title="Price"),
+                    width="stretch"
+                )
+        else:
+            st.plotly_chart(
+                plot_line(df1, f"{symbol} Close", ["Close"] + (["MA20", "MA50"] if show_ma else []), y_title="Price"),
+                width="stretch"
+            )
 
-        with st.expander("Show OHLC lines (optional)"):
+        with st.expander("Show OHLC lines"):
             ohlc_cols = [c for c in ["Open", "High", "Low", "Close"] if c in df1.columns]
             if ohlc_cols:
-                st.plotly_chart(make_line_fig(df1, f"{symbol} OHLC", ohlc_cols), use_container_width=True)
+                st.plotly_chart(plot_line(df1, f"{symbol} OHLC", ohlc_cols, y_title="Price"), width="stretch")
             else:
-                st.info("OHLC columns not available for this symbol/time range.")
+                st.info("OHLC columns not available.")
 
 # =========================
-# Correlation section
+# Correlation (on-demand to avoid rate limiting)
 # =========================
 st.markdown("## Cross-Stock Correlation")
 
 corr_input = st.text_input("Symbols (comma separated)", "AAPL, MSFT, GOOGL")
 corr_syms = [s.strip().upper() for s in corr_input.split(",") if s.strip()]
 
-corr_data = {}
-for s in corr_syms:
-    tmp = fetch_stock_data(s, range_option)
-    if not tmp.empty and "Close" in tmp.columns:
-        corr_data[s] = tmp["Close"]
+run_corr = st.button("Run correlation (fetches data)", help="This triggers multiple downloads; keep it on-demand to avoid throttling.")
 
-if corr_data:
-    corr_df = pd.DataFrame(corr_data).dropna()
-    if not corr_df.empty:
-        fig, ax = plt.subplots()
-        sns.heatmap(corr_df.corr(), annot=True, cmap="coolwarm", ax=ax)
-        st.pyplot(fig)
+if run_corr:
+    with st.spinner("Fetching symbols for correlation..."):
+        corr_data = {}
+        for s in corr_syms[:10]:  # cap to avoid hammering Yahoo
+            tmp = fetch_stock_data_cached(s, range_option)
+            if not tmp.empty and "Close" in tmp.columns:
+                corr_data[s] = tmp["Close"]
+
+    if corr_data:
+        corr_df = pd.DataFrame(corr_data).dropna()
+        if corr_df.empty:
+            st.info("Not enough overlapping data to compute correlations.")
+        else:
+            fig, ax = plt.subplots()
+            sns.heatmap(corr_df.corr(), annot=True, cmap="coolwarm", ax=ax)
+            st.pyplot(fig)
     else:
-        st.info("Not enough overlapping data to compute correlations.")
-else:
-    st.info("Enter at least one valid symbol.")
+        st.warning("Could not fetch correlation data (rate limit or invalid symbols). Try again later.")
 
 # =========================
 # Analyst Summary
@@ -308,20 +345,23 @@ def generate_summary(df: pd.DataFrame, sym: str, period_label: str) -> str:
 
 if not df1.empty:
     st.info(generate_summary(df1, symbol, range_option))
+else:
+    st.info("Load price data to generate a summary.")
 
 # =========================
-# Insider Trading Snapshot (Finviz scrape)
+# Insider Trading Snapshot (Finviz scrape) - cached and safe
 # =========================
 st.markdown("## Insider Trading Snapshot")
 
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=3600, show_spinner=False)
 def fetch_insider_finviz(sym: str) -> pd.DataFrame:
+    if not sym:
+        return pd.DataFrame()
     try:
         url = f"https://finviz.com/quote.ashx?t={sym}"
         headers = {"User-Agent": "Mozilla/5.0"}
         r = requests.get(url, headers=headers, timeout=10)
         soup = BeautifulSoup(r.text, "html.parser")
-
         table = soup.find("table", class_="body-table")
         rows = table.find_all("tr") if table else []
 
@@ -341,94 +381,42 @@ def fetch_insider_finviz(sym: str) -> pd.DataFrame:
     except Exception:
         return pd.DataFrame()
 
-insider_df = fetch_insider_finviz(symbol) if symbol else pd.DataFrame()
-if insider_df.empty:
-    st.info("No insider data found (or the source blocked the request).")
-else:
-    st.dataframe(insider_df, use_container_width=True)
+with st.expander("Load insider data (cached)"):
+    insider_df = fetch_insider_finviz(symbol)
+    if insider_df.empty:
+        st.info("No insider data found (or the source blocked the request).")
+    else:
+        st.dataframe(insider_df, width="stretch")
 
 # =========================
-# Event-Driven Insights (NewsData.io)
+# Event-Driven Insights (NewsData.io) - cached
 # =========================
 st.markdown("## Event-Driven Insights")
 
-@st.cache_data(ttl=900)
+@st.cache_data(ttl=1800, show_spinner=False)
 def fetch_news(sym: str):
-    if not NEWS_API_KEY:
+    if not NEWS_API_KEY or not sym:
         return []
     url = f"https://newsdata.io/api/1/news?apikey={NEWS_API_KEY}&q={sym}&language=en"
     try:
         r = requests.get(url, timeout=10)
         data = r.json()
-        if data.get("results"):
-            return data["results"][:6]
-        return []
+        return data.get("results", [])[:6] if isinstance(data, dict) else []
     except Exception:
         return []
 
-news_items = fetch_news(symbol) if symbol else []
-if news_items:
-    for item in news_items:
-        title = item.get("title", "(no title)")
-        link = item.get("link", "")
-        pub = item.get("pubDate", "")
-        st.markdown(f"**{title}**")
-        if link:
-            st.markdown(f"{pub} — [Link]({link})")
-        else:
-            st.markdown(f"{pub}")
-        st.write("")
-else:
-    st.info("No recent news found.")
-
-# =========================
-# Government Trades (Nancy Pelosi, etc.) — optional integration
-# =========================
-st.markdown("## Government Trades (Optional)")
-
-st.write(
-    "If you want weekly trades for specific politicians (e.g., Nancy Pelosi), the most reliable approach is using a dedicated Congress-trading data API.\n\n"
-    "- Best path: **Quiver Quantitative API** (requires an API token). Their Python package supports `congress_trading()` and filtering by politician. :contentReference[oaicite:2]{index=2}\n\n"
-    "This section will activate if you add `QUIVER_API_KEY` in Streamlit Secrets."
-)
-
-with st.expander("Enable Congress trades (advanced)"):
-    st.caption("Add QUIVER_API_KEY to Streamlit Secrets, then use the controls below.")
-    politicians = st.multiselect(
-        "Key traders to track",
-        ["Nancy Pelosi", "Marjorie Taylor Greene", "J. D. Vance"],
-        default=["Nancy Pelosi"]
-    )
-    days_back = st.slider("Lookback window (days)", 7, 30, 7)
-
-def _fetch_quiver_congress_trades(api_key: str) -> pd.DataFrame:
-    """
-    Placeholder implementation:
-    - Quiver provides a Python package and API token-based access for Congress Trading. :contentReference[oaicite:3]{index=3}
-    - To keep this app stable without extra dependencies, we don’t import quiverquant here by default.
-    - If you want it enabled, install `quiverquant` and use the code in the comment below.
-    """
-    return pd.DataFrame()
-
-if QUIVER_API_KEY:
-    st.success("QUIVER_API_KEY detected. Next step: enable Quiver fetch code (see notes below).")
-    st.code(
-        """# Enable Quiver congress trades:
-# 1) pip install quiverquant
-# 2) Then add this import + function to your app:
-
-# import quiverquant
-# quiver = quiverquant.quiver(st.secrets["QUIVER_API_KEY"])
-# df_congress = quiver.congress_trading()  # recent trades
-# # Optional: filter by politician name:
-# df_pelosi = quiver.congress_trading("Nancy Pelosi", politician=True)
-
-# Then filter df_congress by last X days and selected politicians and display with st.dataframe().
-""",
-        language="python"
-    )
-else:
-    st.info("QUIVER_API_KEY not set. This section will remain informational for now.")
+with st.expander("Load recent news (cached)"):
+    news_items = fetch_news(symbol)
+    if news_items:
+        for item in news_items:
+            title = item.get("title", "(no title)")
+            link = item.get("link", "")
+            pub = item.get("pubDate", "")
+            st.markdown(f"**{title}**")
+            st.markdown(f"{pub} — [Link]({link})" if link else f"{pub}")
+            st.write("")
+    else:
+        st.info("No recent news found (or API is rate-limited).")
 
 # =========================
 # Footer

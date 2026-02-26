@@ -6,4 +6,4 @@ seaborn
 matplotlib
 requests
 beautifulsoup4
-lxm
+
